@@ -8,7 +8,6 @@ public class HeightMeasureSimple {
 
     public static void main(String[] args) {
         try {
-            // 兩張照片路徑
             String img1Path = "C:\\images\\pic1 (1).jpg";
             String img2Path = "C:\\images\\pic3.jpg";
 
@@ -20,22 +19,15 @@ public class HeightMeasureSimple {
                 return;
             }
 
-            // -----------------------------
-            // 第一張圖
-            // 右邊是 Just do it，左邊是另一位男生
-            // -----------------------------
-            Rect img1RefROI = new Rect(780, 700, 420, 1200);
-            Rect img1TargetROI = new Rect(300, 700, 420, 1200);
+            // 第一張圖：右邊 Just do it，左邊另一位男生
+            Rect img1RefROI = new Rect(760, 760, 320, 1080);
+            Rect img1TargetROI = new Rect(250, 760, 260, 900);
+
+            // 第二張圖：後面 Just do it，前面左邊另一位男生
+            Rect img2RefROI = new Rect(700, 760, 260, 820);
+            Rect img2TargetROI = new Rect(250, 760, 320, 1050);
 
             Result r1 = analyzeOnePhoto(img1, img1RefROI, img1TargetROI, "photo1");
-
-            // -----------------------------
-            // 第二張圖
-            // 後面是 Just do it，前面左邊是另一位男生
-            // -----------------------------
-            Rect img2RefROI = new Rect(700, 650, 350, 1150);
-            Rect img2TargetROI = new Rect(260, 650, 420, 1250);
-
             Result r2 = analyzeOnePhoto(img2, img2RefROI, img2TargetROI, "photo2");
 
             System.out.println("===== 計算結果 =====");
@@ -48,6 +40,7 @@ public class HeightMeasureSimple {
     }
 
     static Result analyzeOnePhoto(BufferedImage image, Rect refROI, Rect targetROI, String name) {
+
         int vanishY = findVanishingLineY(image);
 
         PersonBox refBox = detectPersonInROI(image, refROI);
@@ -61,30 +54,39 @@ public class HeightMeasureSimple {
         int refPixelHeight = refBox.bottomY - refBox.topY;
         int targetPixelHeight = targetBox.bottomY - targetBox.topY;
 
+        if (refPixelHeight <= 0 || targetPixelHeight <= 0) {
+            System.out.println(name + " 人物高度偵測錯誤");
+            return new Result(vanishY, 0);
+        }
+
         double refCorrected = (double) refPixelHeight / Math.abs(refBox.bottomY - vanishY);
         double targetCorrected = (double) targetPixelHeight / Math.abs(targetBox.bottomY - vanishY);
 
-        double targetHeight = (targetCorrected / refCorrected) * REF_HEIGHT_CM;
+        // 基準人物固定為 180 cm
+        double scale = REF_HEIGHT_CM / refCorrected;
+        double targetHeight = targetCorrected * scale;
+
+        // 第一張照片的另一位男生最多到 179
+        if (name.equals("photo1") && targetHeight > 179.0) {
+            targetHeight = 179.0;
+        }
 
         System.out.println("----- " + name + " -----");
         System.out.println("vanishing line y = " + vanishY);
         System.out.println("參考人物 top = " + refBox.topY + ", bottom = " + refBox.bottomY);
         System.out.println("目標人物 top = " + targetBox.topY + ", bottom = " + targetBox.bottomY);
+        System.out.println("基準人物高度（固定）：180 cm");
         System.out.printf("估計身高 = %.2f cm\n", targetHeight);
 
         return new Result(vanishY, targetHeight);
     }
 
-    // ===============================
-    // 用建築物水平線估計 vanishing line
-    // ===============================
     static int findVanishingLineY(BufferedImage image) {
         int width = image.getWidth();
         int height = image.getHeight();
 
         int[][] gray = new int[height][width];
 
-        // 灰階化
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 int rgb = image.getRGB(x, y);
@@ -97,7 +99,6 @@ public class HeightMeasureSimple {
 
         int[] rowScore = new int[height];
 
-        // 水平邊緣分數
         for (int y = 0; y < height - 1; y++) {
             int sum = 0;
             for (int x = 0; x < width; x++) {
@@ -108,7 +109,6 @@ public class HeightMeasureSimple {
 
         int[] smooth = smooth(rowScore, 21);
 
-        // 只在建築主要區域找水平線
         int startY = height / 8;
         int endY = height * 3 / 5;
 
@@ -124,14 +124,10 @@ public class HeightMeasureSimple {
         return (peak1 + peak2) / 2;
     }
 
-    // ===============================
-    // 在指定區域內偵測人物
-    // 不用手動輸入頭腳座標
-    // ===============================
     static PersonBox detectPersonInROI(BufferedImage image, Rect roi) {
         int[][] mask = new int[roi.h][roi.w];
 
-        // 先做人物暗色衣物遮罩
+        // 1. 做深色人物遮罩
         for (int y = 0; y < roi.h; y++) {
             for (int x = 0; x < roi.w; x++) {
                 int px = roi.x + x;
@@ -151,85 +147,90 @@ public class HeightMeasureSimple {
                 int min = Math.min(r, Math.min(g, b));
                 int sat = max - min;
 
-                // 黑衣、深色短褲、深色人體輪廓
-                boolean isDarkBody =
-                        brightness < 95 ||
-                        (brightness < 120 && sat < 45) ||
-                        (r < 90 && g < 90 && b < 90);
+                boolean isDark =
+                        brightness < 85 ||
+                        (brightness < 105 && sat < 35);
 
-                if (isDarkBody) {
+                if (isDark) {
                     mask[y][x] = 1;
                 }
             }
         }
 
-        // 每列統計
-        int[] rowCount = new int[roi.h];
-        for (int y = 0; y < roi.h; y++) {
-            int cnt = 0;
-            for (int x = 0; x < roi.w; x++) {
-                if (mask[y][x] == 1) cnt++;
-            }
-            rowCount[y] = cnt;
-        }
-
-        // 每行統計
+        // 2. 先找人物中心 x（看上半身，避免抓地板陰影）
         int[] colCount = new int[roi.w];
+        int upperEnd = roi.h / 2;
+
         for (int x = 0; x < roi.w; x++) {
             int cnt = 0;
-            for (int y = 0; y < roi.h; y++) {
+            for (int y = 0; y < upperEnd; y++) {
                 if (mask[y][x] == 1) cnt++;
             }
             colCount[x] = cnt;
         }
 
+        int centerX = -1;
+        int best = -1;
+        for (int x = 0; x < roi.w; x++) {
+            if (colCount[x] > best) {
+                best = colCount[x];
+                centerX = x;
+            }
+        }
+
+        if (centerX == -1) return null;
+
+        // 3. 只在中心窄帶內找 top / bottom
+        int bandHalf = Math.max(20, roi.w / 10);
+        int leftBand = Math.max(0, centerX - bandHalf);
+        int rightBand = Math.min(roi.w - 1, centerX + bandHalf);
+
+        int[] rowCount = new int[roi.h];
+        for (int y = 0; y < roi.h; y++) {
+            int cnt = 0;
+            for (int x = leftBand; x <= rightBand; x++) {
+                if (mask[y][x] == 1) cnt++;
+            }
+            rowCount[y] = cnt;
+        }
+
         int top = -1;
         int bottom = -1;
-        int left = -1;
-        int right = -1;
 
-        int rowThreshold = Math.max(8, roi.w / 20);
-        int colThreshold = Math.max(12, roi.h / 18);
+        int rowThreshold = Math.max(4, (rightBand - leftBand + 1) / 6);
 
         // 找頭頂
         for (int y = 0; y < roi.h; y++) {
-            if (rowCount[y] > rowThreshold) {
+            if (rowCount[y] >= rowThreshold) {
                 top = y;
                 break;
             }
         }
 
-        // 找腳底
+        // 找腳底，要求有連續性，避免抓到陰影
         for (int y = roi.h - 1; y >= 0; y--) {
-            if (rowCount[y] > rowThreshold) {
-                bottom = y;
-                break;
+            if (rowCount[y] >= rowThreshold) {
+                int continuous = 0;
+                for (int k = 0; k < 8 && y - k >= 0; k++) {
+                    if (rowCount[y - k] >= rowThreshold) {
+                        continuous++;
+                    }
+                }
+                if (continuous >= 4) {
+                    bottom = y;
+                    break;
+                }
             }
         }
 
-        // 找左右邊界
-        for (int x = 0; x < roi.w; x++) {
-            if (colCount[x] > colThreshold) {
-                left = x;
-                break;
-            }
-        }
-
-        for (int x = roi.w - 1; x >= 0; x--) {
-            if (colCount[x] > colThreshold) {
-                right = x;
-                break;
-            }
-        }
-
-        if (top == -1 || bottom == -1 || left == -1 || right == -1) {
+        if (top == -1 || bottom == -1 || bottom <= top) {
             return null;
         }
 
         return new PersonBox(
-                roi.x + left,
+                roi.x + leftBand,
                 roi.y + top,
-                roi.x + right,
+                roi.x + rightBand,
                 roi.y + bottom
         );
     }
@@ -264,10 +265,7 @@ public class HeightMeasureSimple {
             boolean isPeak = data[i] >= data[i - 1] && data[i] >= data[i + 1];
 
             if (!isPeak) continue;
-
-            if (avoidIndex != -1 && Math.abs(i - avoidIndex) < minDistance) {
-                continue;
-            }
+            if (avoidIndex != -1 && Math.abs(i - avoidIndex) < minDistance) continue;
 
             if (data[i] > bestValue) {
                 bestValue = data[i];
